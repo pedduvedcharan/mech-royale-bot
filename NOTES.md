@@ -6,7 +6,7 @@ Deadline: Sun Nov 22, 10:00 AM CST. Metric: mean of (16 - place) over 48 practic
 
 | Score | Commit | Submitted |
 |-------|--------|-----------|
-| **2.00** | `79710fa` (v2) | Fri 11:26 PM CST |
+| **2.15** | `0658e4d` (v3) | Fri 11:36 PM CST |
 
 ## Submission log
 
@@ -14,7 +14,8 @@ Deadline: Sun Nov 22, 10:00 AM CST. Metric: mean of (16 - place) over 48 practic
 |---|------------|--------|-----------:|------------------------------:|--------|
 | 1 | Fri 10:58 PM | `b9c2787` | **1.15** | 1.10 | Baseline: kit example strategy, pinned base image |
 | 2 | Fri 11:26 PM | `79710fa` | **2.00** | 2.48 | v2: map model, zone hold spot, cover/hide, lone-hunter fights, lead aiming, pickups, hard-wrapped act() |
-| 3 | Fri ~11:55 PM | v3 (pending) | pending | 2.93 | Only treat enemies that shot us / aim at us / are within 35 m as threats |
+| 3 | Fri 11:36 PM | `0658e4d` | **2.15** | 2.93 | v3: only treat enemies that shot us / aim at us / are within 35 m as threats |
+| 4 | Sat ~1:45 AM | v4 (pending) | pending | sim2: 1.87 -> 2.52 (cal-B), 2.28 -> 3.00 (cal-A) | Farm cubes from crates and NPC drones when safe; bystanders no longer count as threats |
 
 ## What the scorer shows
 
@@ -66,3 +67,30 @@ Cost: one atan2 per visible enemy per tick. Must not break: zone logic, hiding f
 Proof: the 4 earliest-death seeds improved (29: 16->12, 33: 15->14, 6: 15->14, 23: 15->14);
 17 seeds better, 7 worse; mean 2.48 -> 2.93. Under the harsh calibration (non-hunters shoot within
 45 m) it is level (1.57 vs 1.60, 60 matches), so it should not hurt if bystanders are more aggressive.
+
+Real result: **2.15** (+0.15 over v2). Smaller than the local gain (+0.45), so cal-A is optimistic.
+
+### #4 v4: safe cube farming + bystander fix
+Analysis of v3 (local traces, seeds 301-312, tick by tick):
+- Seed 310 (died 16th, 0 kills): the single easy hunter sat at ~45 m with 1130 HP and was never hit.
+  Two passive bystanders within 35 m counted as "threats", so v3 hid instead of fighting and spent
+  every shot on the bystanders (1000+ damage that they simply regenerated).
+- Over 20 matches v3 dealt 4.2x the damage it took and hit 96% of shots, yet averaged ~2 kills:
+  damage is spread and the targets regenerate. The bot loses fights by being weaker, not by missing.
+- The simulator lacked cubes, crates, NPC drones and upgrades, so it could not value growing
+  stronger. Added them (36 crates at 75% on the ground, 12 drones that shoot back, cube drops from
+  kills, +4% HP and damage per cube, upgrade offers, house bots also gaining cubes over time).
+  With that "sim2", v3 scores 1.87 (cal-B) - much closer to its real 2.15 than the old sim was.
+- In sim2, 8-15 of 60 v3 deaths are to NPC drones it walked near, and v3 rarely has more than 1-2
+  cubes when the first hunter arrives.
+Change:
+1. `_farm()`: in travel mode, with no attacker known within 150 m, not hit for 5 s and well inside
+   the zone, shoot ground crates within 75 m (walk up to grab the cube) and NPC drones within 75 m
+   when HP > 60% (keep ~30 m, lead the shot). Visible cubes are collected by the existing loot code.
+   NPC damage no longer flips the bot into hide mode.
+2. Bug fix from seed 310: mechs within 35 m are no longer threats just for being close; attackers
+   (shot us in the last 10 s / aim at us) are shot first.
+Cost: one extra pass over visible crates/drones per tick, one LOS check. p99 7.2 ms in the sandbox check.
+Local proof (sim2, 60 matches each, fresh seeds):
+- cal-B: v3 1.87 -> v4 2.52; deaths to drones 8 -> 3; died first 9 -> 4.
+- cal-A: v3 2.28 -> v4 3.00; deaths to drones 13 -> 4.

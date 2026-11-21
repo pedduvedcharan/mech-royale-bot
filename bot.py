@@ -508,6 +508,13 @@ UPGRADE_ORDER = ["armor", "plating", "nanites", "servos", "laser_damage", "gun_d
                  "mortar_velocity", "mortar_splash", "laser_pierce"]
 WEAPON_RANK = {"laser": 3, "lightning": 2, "mortar": 1, "gun": 0}
 
+# tunables (the local simulator can override them through BOT_PARAMS; unset in real matches)
+P = {"farm": 1, "farm_r": 75.0, "npc_hp": 0.6}
+try:
+    P.update(json.loads(os.environ.get("BOT_PARAMS", "{}")))
+except Exception:
+    pass
+
 
 # ====================================================================== the bot
 class Bot:
@@ -546,6 +553,7 @@ class Bot:
         self.scan = 0.0
         self.crate_target = None
         self.attack_t = {}         # enemy id -> last time it damaged us or aimed at us
+        self.farm_shot = None      # aim/fire at a crate or drone while farming cubes
 
     # ------------------------------------------------------------ entry
     def act(self, obs):
@@ -629,7 +637,7 @@ class Bot:
 
         # --- events
         for e in obs.get("events", []) or []:
-            if e.get("type") == "damaged" and e.get("weapon") != "zone":
+            if e.get("type") == "damaged" and e.get("weapon") not in ("zone", "npc"):
                 self.last_dmg_t = t
                 self.last_dmg_bearing = e.get("bearing")
                 self.last_dmg_by = e.get("by")
@@ -690,7 +698,7 @@ class Bot:
                 to_me = math.atan2(y - ey, x - ex)
                 if abs(wrap(fin(e["aim"][0]) - to_me)) < 0.15 or (e.get("charging") and abs(wrap(fin(e["aim"][0]) - to_me)) < 0.3):
                     self.attack_t[eid] = t
-            hostile = t - self.attack_t.get(eid, -99) < 10 or d < 35
+            hostile = t - self.attack_t.get(eid, -99) < 10
             if not hostile:
                 continue
             known.append((d, eid, e))
@@ -737,8 +745,13 @@ class Bot:
             move = self._fight_move(x, y, target, t, gx, gy)
         else:
             loot = self._loot(obs, x, y, z, known, t)
+            farm = None
+            if loot is None and P["farm"]:
+                farm = self._farm(obs, me, x, y, z, known, t, t0)
             if loot is not None:
                 move = loot
+            elif farm is not None:
+                move, self.farm_shot = farm
             else:
                 dg = math.hypot(gx - x, gy - y)
                 if dg > 3.0:
@@ -755,6 +768,9 @@ class Bot:
 
         # --- aiming and firing
         shoot = self._pick_shot(obs, me, x, y, z, seen, target, mode)
+        if shoot is None and self.farm_shot is not None:
+            shoot = self.farm_shot
+        self.farm_shot = None
         if shoot is not None:
             act.update(shoot)
         else:
@@ -994,6 +1010,64 @@ class Bot:
         s = 1.0 if bd > 4 else 0.5
         return [math.cos(yaw) * s, math.sin(yaw) * s]
 
+    # ------------------------------------------------------------ farming cubes (only when safe)
+    def _farm(self, obs, me, x, y, z, known, t, t0):
+        """Break crates and kill NPC drones for power cubes when no attacker is around.
+        Returns (move, shot) or None."""
+        if any(d < 150 for d, _, _ in known) or t - self.last_dmg_t < 5 or not self.in_safe(x, y, 15):
+            return None
+        w = self.w
+        wsl = me.get("weapons") or []
+        gun = wsl[0] if wsl and wsl[0] and wsl[0].get("kind") == "gun" else None
+        if gun is None:
+            return None
+        hp_ok = me["hp"] > P["npc_hp"] * max(1.0, me["max_hp"])
+        best, bs = None, 1e9
+        for c in obs.get("crates", []) or []:
+            px, py, pz = c["pos"]
+            if abs(pz - z) > 3.0:
+                continue
+            d = math.hypot(px - x, py - y)
+            if d > P["farm_r"] or not self.in_safe(px, py, 12):
+                continue
+            if d < bs:
+                bs, best = d, ("crate", c, d)
+        if hp_ok:
+            for m in obs.get("mechs", []) or []:
+                if m.get("kind") != "npc":
+                    continue
+                px, py, pz = m["pos"]
+                d = math.hypot(px - x, py - y)
+                if d > P["farm_r"] or not self.in_safe(px, py, 12):
+                    continue
+                sc = d + 20 + fin(m.get("hp", 350)) * 0.05
+                if sc < bs:
+                    bs, best = sc, ("npc", m, d)
+        if best is None:
+            return None
+        kind, o, d = best
+        px, py, pz = o["pos"]
+        tz = pz + (1.2 if kind == "crate" else 1.8)
+        if kind == "npc":
+            v = o.get("vel", [0, 0, 0])
+            px, py, tz, _ = self._lead(x, y, self.muzzle, px, py, tz, v[0], v[1], 0.0, fin(gun.get("stats", {}).get("speed", 252), 252))
+        clear = w is None or w.los(x, y, self.muzzle, px, py, tz, 1.5)
+        yaw = math.atan2(py - y, px - x)
+        pit = math.atan2(tz - self.muzzle, max(0.5, math.hypot(px - x, py - y)))
+        aim = me.get("aim", [0, 0])
+        fire = False
+        if clear and gun.get("reload", 0) <= 0 and abs(wrap(aim[0] - yaw)) < max(0.01, math.atan2(0.9, d)) and abs(aim[1] - pit) < max(0.02, math.atan2(1.2, d)):
+            fire = True
+        # walk to a shooting spot: close in on crates (to grab the cube), keep 30 m from drones
+        want = 6.0 if kind == "crate" else 30.0
+        if not clear or d > want + 4:
+            move = self._nav_to(o["pos"][0], o["pos"][1], x, y, t0)
+        elif kind == "npc" and d < want - 8:
+            move = [-math.cos(yaw), -math.sin(yaw)]
+        else:
+            move = [0.0, 0.0]
+        return move, {"aim": [yaw, pit], "fire": [fire, False]}
+
     def _take(self, obs, me, x, y):
         wsl = me.get("weapons") or [None, None]
         cur1 = wsl[1]["kind"] if len(wsl) > 1 and wsl[1] else None
@@ -1065,6 +1139,8 @@ class Bot:
             if w is not None and not w.los(x, y, self.muzzle, ex, ey, cz, 1.5):
                 continue
             pri = d + (0 if target and eid == target[0] else 60) + fin(m.get("hp", 1400)) * 0.03
+            if self.t - self.attack_t.get(eid, -99) < 10:
+                pri -= 300   # the mechs actually shooting at us come first
             cands.append((pri, eid, m, d, cz))
         if not cands:
             # release a charging laser rather than walk at half speed
