@@ -509,11 +509,23 @@ UPGRADE_ORDER = ["armor", "plating", "nanites", "servos", "laser_damage", "gun_d
 WEAPON_RANK = {"laser": 3, "lightning": 2, "mortar": 1, "gun": 0}
 
 # tunables (the local simulator can override them through BOT_PARAMS; unset in real matches)
-P = {"farm": 1, "farm_r": 75.0, "farm_mem_r": 170.0, "npc_hp": 0.6, "maxf": 1, "fight_hp": 0.5, "ratio": 1.6, "want": 70.0, "want_laser": 70.0, "grab_r": 50.0, "slew_frac": 0.5, "fboost": 30.0}
+P = {"farm": 1, "farm_r": 75.0, "farm_mem_r": 170.0, "npc_hp": 0.6, "maxf": 1, "fight_hp": 0.5, "ratio": 1.6, "want": 70.0, "want_laser": 70.0, "grab_r": 50.0, "slew_frac": 0.5, "fboost": 30.0, "regen_hp": 0.75}
 try:
     P.update(json.loads(os.environ.get("BOT_PARAMS", "{}")))
 except Exception:
     pass
+
+
+_DET = [0.0]
+
+
+def now():
+    """Clock for per-tick work budgets. The simulator sets BOT_PARAMS {"det": 1} to make budgets
+    count calls instead of time, so runs are reproducible; real matches use the real clock."""
+    if P.get("det"):
+        _DET[0] += 0.0004
+        return _DET[0]
+    return time.perf_counter()
 
 
 # ====================================================================== the bot
@@ -559,7 +571,7 @@ class Bot:
 
     # ------------------------------------------------------------ entry
     def act(self, obs):
-        t0 = time.perf_counter()
+        t0 = now()
         try:
             a = self._act(obs, t0)
         except Exception:
@@ -738,6 +750,10 @@ class Bot:
                 mode = "hide"
         elif hurt_recent and (self.last_dmg_by is not None or self.last_dmg_bearing is not None):
             mode = "hide"
+        elif hp < P["regen_hp"] * mhp and in_zone and not zone_urgent and t - self.last_dmg_t < 40:
+            # between fights: sit still in cover until health regenerates (45 HP/s after 5 s
+            # without damage) instead of walking into the next hunter half dead
+            mode = "regen"
         if zone_urgent and mode != "fight":
             mode = "zone" if mode != "hide" or not in_zone else "hide"
         if not in_zone and mode == "fight" and dz_now > 10:
@@ -751,7 +767,7 @@ class Bot:
         if mode == "zone":
             move = self._nav_to(gx, gy, x, y, t0)
             boost = (not in_zone) or dz_now > -3 or me.get("energy", 0) > 60
-        elif mode == "hide":
+        elif mode in ("hide", "regen"):
             move, boost = self._hide(x, y, z, t, known, threats, t0)
         elif mode == "fight":
             move = self._fight_move(x, y, target, t, gx, gy)
@@ -823,7 +839,7 @@ class Bot:
         r = zone["next_radius"]
         key = (round(cx, 1), round(cy, 1), round(r, 1))
         if self.hold is None or key != self.hold_key:
-            if time.perf_counter() - t0 < 0.010 or self.hold is None:
+            if now() - t0 < 0.010 or self.hold is None:
                 self.hold = self._pick_hold(cx, cy, r, x, y)
                 self.hold_key = key
         return self.hold
@@ -869,7 +885,7 @@ class Bot:
         f = self.flow
         if not f.done:
             # build the field in slices to stay inside the tick budget
-            while not f.done and time.perf_counter() - t0 < 0.005:
+            while not f.done and now() - t0 < 0.005:
                 f.work(1500)
         wp = f.waypoint(x, y) if f.done or f.dist[max(0, w.ncell(x, y))] >= 0 else None
         if wp is None:
@@ -946,7 +962,7 @@ class Bot:
         best, bs = None, 1e18
         for r in (7.0, 14.0, 22.0, 32.0, 45.0):
             for k in range(16):
-                if time.perf_counter() - t0 > 0.008:
+                if now() - t0 > 0.008:
                     break
                 a = away + (k - 8) * (math.pi / 8)
                 px, py = x + math.cos(a) * r, y + math.sin(a) * r

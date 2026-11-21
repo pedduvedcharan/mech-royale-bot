@@ -6,7 +6,7 @@ Deadline: Sun Nov 22, 10:00 AM CST. Metric: mean of (16 - place) over 48 practic
 
 | Score | Commit | Submitted |
 |-------|--------|-----------|
-| **3.21** | `cc9ce93` (v5) | Sat 2:28 AM CST |
+| **3.50** | `9feac44` (v6) | Sat 3:23 AM CST |
 
 ## Submission log
 
@@ -17,7 +17,8 @@ Deadline: Sun Nov 22, 10:00 AM CST. Metric: mean of (16 - place) over 48 practic
 | 3 | Fri 11:36 PM | `0658e4d` | **2.15** | 2.93 | v3: only treat enemies that shot us / aim at us / are within 35 m as threats |
 | 4 | Sat 1:20 AM | `79a0edc` | **2.60** | sim2 cal-B 2.52 | v4: farm cubes from crates and NPC drones when safe; bystanders no longer count as threats |
 | 5 | Sat 2:28 AM | `cc9ce93` | **3.21** | sim2 cal-B 2.68 -> 2.95 | v5: fire when one tick of torso slew closes the aim error; grab dropped cubes; remember crates/drones |
-| 6 | Sat ~4:05 AM | v6 (pending) | pending | 2.97 -> 3.05 (3 seed sets) | Sprint (boost) the strafe in fights while energy > 30 |
+| 6 | Sat 3:23 AM | `9feac44` | **3.50** | 2.97 -> 3.05 (3 seed sets) | v6: sprint (boost) the strafe in fights while energy > 30 |
+| 7 | Sat ~5:25 AM | v7 (pending) | pending | paired: +0.16 +- 0.07 over v6 | Regenerate in cover between fights when HP < 75% |
 
 ## What the scorer shows
 
@@ -146,3 +147,46 @@ shooter leading with our old velocity misses after each strafe flip. Energy rege
 0.6 s, so the bot sprints in bursts. Cost: none.
 Local proof (sim2, 60 matches per cell): cal-B seeds 1101/1201/1301: 3.12/2.85/2.95 -> 3.32/2.87/2.97;
 accurate house bots (NOISE 1.0) seeds 1101: 2.75 -> 2.78. Small but positive in all four.
+
+Real result: **3.50** (+0.29 over v5; the sim only showed +0.08). Dodging is worth far more against
+the real house bots than against the simulator's noisy-aim bots: real hunters lead their shots well.
+Added a "precise, leading house bots" setting to the sim (`LEAD_ALL=1.0 NOISE_MULT=0.4`, "cal-D"):
+there v5 -> v6 is 1.73 -> 1.95, matching the real direction.
+
+### After v6: experiments that did not beat v6 locally (not pushed)
+- Faster strafe flips (0.35-0.9 s) + boost while hiding (cal-D): 1.67 vs 1.95. Boost while hiding
+  alone: 1.82 vs 1.95. Rejected.
+- Longer fighting range 110/150 m (cal-D): 1.65 vs 1.95. Rejected.
+- Close to 32 m when holding lightning (cal-B): 2.85 vs 2.88. Rejected.
+- Walk up to 150 m to a remembered laser (cal-B): 2.78 vs 2.55 (seeds 1401) but 3.10 vs 3.12
+  (seeds 1101). Inconclusive; not pushed.
+- Weapon stats (sim, 40 matches): matches where we held a laser score 4.4, lightning 2.8,
+  mortar 2.4, no special 1.6; the gun still does ~83% of our damage.
+- Face attackers that hit us from outside our view (paired, cal-B): +0.00 (56/60 matches identical:
+  it almost never triggers). Not pushed.
+- Reload in any lull when the magazine is under half (paired, cal-B): -0.05 +- 0.09. Not pushed.
+- Zig-zag + sprint while under fire outside fights: cal-D +0.23 +- 0.15 and -0.08 +- 0.13, cal-B
+  -0.05 +- 0.17. Not pushed.
+- Fight two hunters at once (paired, cal-B): -0.22 +- 0.14. Rejected.
+- Supply drops (added to the sim): the bot captured 0 drops in 30 matches (it is rarely alive and
+  free when they land at 95 s+), score 2.65 vs ~2.7. Not pushed.
+
+### Measuring smaller effects: paired, deterministic simulation
+60-match runs of the *same* code differed by up to 0.35 (2.52 vs 2.88), because the bot's per-tick
+work budgets use the wall clock. `bot.py` now reads its budget clock through `now()`; with
+`BOT_PARAMS={"det":1}` (simulator only) the budgets count calls instead, so a run is reproducible and
+A/B runs on the same seeds are compared match by match (`ab.sh`: mean paired difference +- its
+standard error). Real matches still use the real clock.
+
+### #7 v7: regenerate between fights
+Why: deaths come in the 2nd/3rd fight. After a kill v6 walks straight back to its hold spot or loot
+with whatever HP it has left, and meets the next (now two) hunters at 40-70% HP. HP regenerates at
+45/s after 5 s without damage, so 15 s in cover is worth ~650 HP.
+Change: a "regen" mode: no attacker in sight, not hit in the last 2.5 s, HP < 75%, inside the zone and
+no zone pressure -> use the hide logic (move out of every recently seen attacker's line of sight, then
+stand still) until HP is back over 75%. Zone urgency and new attackers override it.
+Cost: one more condition per tick; hide search only while regenerating.
+Local proof (paired, 60 matches each, v6 vs v7):
+- cal-B seeds 1501: +0.23 +- 0.18; seeds 1601: +0.00 +- 0.14.
+- cal-D (precise, leading house bots) seeds 1501: +0.40 +- 0.14 (17 better, 5 worse); seeds 1601: +0.00 +- 0.12.
+- Combined: +0.16 +- 0.07.
