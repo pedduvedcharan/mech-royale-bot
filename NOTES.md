@@ -6,7 +6,7 @@ Deadline: Sun Nov 22, 10:00 AM CST. Metric: mean of (16 - place) over 48 practic
 
 | Score | Commit | Submitted |
 |-------|--------|-----------|
-| **2.60** | `79a0edc` (v4) | Sat 1:20 AM CST |
+| **3.21** | `cc9ce93` (v5) | Sat 2:28 AM CST |
 
 ## Submission log
 
@@ -16,7 +16,8 @@ Deadline: Sun Nov 22, 10:00 AM CST. Metric: mean of (16 - place) over 48 practic
 | 2 | Fri 11:26 PM | `79710fa` | **2.00** | 2.48 | v2: map model, zone hold spot, cover/hide, lone-hunter fights, lead aiming, pickups, hard-wrapped act() |
 | 3 | Fri 11:36 PM | `0658e4d` | **2.15** | 2.93 | v3: only treat enemies that shot us / aim at us / are within 35 m as threats |
 | 4 | Sat 1:20 AM | `79a0edc` | **2.60** | sim2 cal-B 2.52 | v4: farm cubes from crates and NPC drones when safe; bystanders no longer count as threats |
-| 5 | Sat ~2:40 AM | v5 (pending) | pending | sim2 cal-B 2.68 -> 2.95 | Fire when one tick of torso slew closes the aim error; grab dropped cubes; remember crates/drones |
+| 5 | Sat 2:28 AM | `cc9ce93` | **3.21** | sim2 cal-B 2.68 -> 2.95 | v5: fire when one tick of torso slew closes the aim error; grab dropped cubes; remember crates/drones |
+| 6 | Sat ~4:05 AM | v6 (pending) | pending | 2.97 -> 3.05 (3 seed sets) | Sprint (boost) the strafe in fights while energy > 30 |
 
 ## What the scorer shows
 
@@ -121,3 +122,27 @@ Cost: none (two multiplications per tick).
 Local proof (sim2 cal-B, 60 matches each):
 - seeds 801-860: no slew 2.62 -> full slew 3.02 -> half slew 2.95; shots per match 122 -> 130.
 - seeds 901-960: no slew 2.73 -> full slew 2.83.
+
+Real result: **3.21** (+0.61 over v4, larger than the sim's +0.3). Firing more often pays.
+
+### After v5: experiments that did not beat v5 locally (not pushed)
+Analysis of v5 (sim2 cal-B, 40 traced matches): when a hunter has line of sight and we don't fire,
+the reason is now mostly the reload (4900 ticks) and "no target in our view" (1945), aim lag only
+664. At death 36/40 matches had 2-3 hunters hitting us in the last 10 s; median death 85 s, 3 kills.
+- Step into cover while the gun reloads: 3.08 vs 3.28 (same seeds). Rejected.
+- Upgrade order weapon-first (gun_mag/gun_rate early): 3.23 vs 3.28. Rejected.
+- Sweep the view +-90 degrees while walking, face heard sounds: 3.07 vs 3.28. Rejected (the sim
+  has no sounds, so the sound half is untested).
+- Full-tick slew tolerance for gun and laser (slew 1.0): 3.03/2.90 vs 3.12/2.85. No gain; keep 0.5.
+- Opening 360-degree look + walking up to 180 m to a remembered laser/lightning: 2.87 vs 3.12. Rejected
+  (the detour costs more than the weapon is worth before the first hunter arrives).
+
+### #6 v6: sprint while strafing in fights
+Why: at death 36/40 v5 matches had 2-3 hunters hitting us. Real house bots are accurate (the
+recorded kit match shows repeated hits from 100-150 m), so getting hit less matters as much as hitting.
+Change: in fight mode, boost (19.5 m/s instead of 11.7) while energy > 30. Lateral displacement
+during a 0.3 s bullet flight goes from ~3.5 m to ~5.8 m, more than the 2.5 m mech radius, so a
+shooter leading with our old velocity misses after each strafe flip. Energy regenerates 18/s after
+0.6 s, so the bot sprints in bursts. Cost: none.
+Local proof (sim2, 60 matches per cell): cal-B seeds 1101/1201/1301: 3.12/2.85/2.95 -> 3.32/2.87/2.97;
+accurate house bots (NOISE 1.0) seeds 1101: 2.75 -> 2.78. Small but positive in all four.

@@ -509,7 +509,7 @@ UPGRADE_ORDER = ["armor", "plating", "nanites", "servos", "laser_damage", "gun_d
 WEAPON_RANK = {"laser": 3, "lightning": 2, "mortar": 1, "gun": 0}
 
 # tunables (the local simulator can override them through BOT_PARAMS; unset in real matches)
-P = {"farm": 1, "farm_r": 75.0, "farm_mem_r": 170.0, "npc_hp": 0.6, "maxf": 1, "fight_hp": 0.5, "ratio": 1.6, "want": 70.0, "want_laser": 70.0, "grab_r": 50.0, "slew_frac": 0.5}
+P = {"farm": 1, "farm_r": 75.0, "farm_mem_r": 170.0, "npc_hp": 0.6, "maxf": 1, "fight_hp": 0.5, "ratio": 1.6, "want": 70.0, "want_laser": 70.0, "grab_r": 50.0, "slew_frac": 0.5, "fboost": 30.0}
 try:
     P.update(json.loads(os.environ.get("BOT_PARAMS", "{}")))
 except Exception:
@@ -755,6 +755,8 @@ class Bot:
             move, boost = self._hide(x, y, z, t, known, threats, t0)
         elif mode == "fight":
             move = self._fight_move(x, y, target, t, gx, gy)
+            # sprint the strafe while energy lasts: harder to lead, more bullets miss
+            boost = P["fboost"] > 0 and me.get("energy", 0) > P["fboost"]
         else:
             loot = self._loot(obs, x, y, z, known, t)
             farm = None
