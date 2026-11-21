@@ -6,7 +6,7 @@ Deadline: Sun Nov 22, 10:00 AM CST. Metric: mean of (16 - place) over 48 practic
 
 | Score | Commit | Submitted |
 |-------|--------|-----------|
-| **2.15** | `0658e4d` (v3) | Fri 11:36 PM CST |
+| **2.60** | `79a0edc` (v4) | Sat 1:20 AM CST |
 
 ## Submission log
 
@@ -15,7 +15,8 @@ Deadline: Sun Nov 22, 10:00 AM CST. Metric: mean of (16 - place) over 48 practic
 | 1 | Fri 10:58 PM | `b9c2787` | **1.15** | 1.10 | Baseline: kit example strategy, pinned base image |
 | 2 | Fri 11:26 PM | `79710fa` | **2.00** | 2.48 | v2: map model, zone hold spot, cover/hide, lone-hunter fights, lead aiming, pickups, hard-wrapped act() |
 | 3 | Fri 11:36 PM | `0658e4d` | **2.15** | 2.93 | v3: only treat enemies that shot us / aim at us / are within 35 m as threats |
-| 4 | Sat ~1:45 AM | v4 (pending) | pending | sim2: 1.87 -> 2.52 (cal-B), 2.28 -> 3.00 (cal-A) | Farm cubes from crates and NPC drones when safe; bystanders no longer count as threats |
+| 4 | Sat 1:20 AM | `79a0edc` | **2.60** | sim2 cal-B 2.52 | v4: farm cubes from crates and NPC drones when safe; bystanders no longer count as threats |
+| 5 | Sat ~2:40 AM | v5 (pending) | pending | sim2 cal-B 2.68 -> 2.95 | Fire when one tick of torso slew closes the aim error; grab dropped cubes; remember crates/drones |
 
 ## What the scorer shows
 
@@ -94,3 +95,29 @@ Cost: one extra pass over visible crates/drones per tick, one LOS check. p99 7.2
 Local proof (sim2, 60 matches each, fresh seeds):
 - cal-B: v3 1.87 -> v4 2.52; deaths to drones 8 -> 3; died first 9 -> 4.
 - cal-A: v3 2.28 -> v4 3.00; deaths to drones 13 -> 4.
+
+Real result: **2.60** (+0.45). sim2 cal-B predicted 2.52, so sim2 cal-B now tracks the real
+scorer closely (v3: 1.87 vs 2.15 real; v4: 2.52 vs 2.60 real). cal-B (`NOISE_MULT=1.4`) is now the
+reference calibration.
+
+### #5 v5: fire through the torso slew
+Analysis of v4 (sim2 cal-B, 40 matches traced, plus 20 matches with fire-reason logging):
+- Deaths: 26/40 had 2+ hunters damaging us in the last 10 s; 12/40 a single hunter; 1 zone death
+  (a simulator artifact: spawned wedged against a wall, fixed in the sim); 4 to NPC drones.
+- In 62% of ticks where a hunter had line of sight to us, we were *not* firing. Reasons logged:
+  reloading 770 ticks (unavoidable, 12-round magazine), **aim not yet aligned 770 ticks**, no
+  target 244, blocked line 52. The median yaw error when holding fire was 0.05 rad, only just over
+  the 0.023 rad tolerance at 70 m: with both mechs strafing, the desired aim moves ~0.03 rad per
+  decision, so the torso is always one decision behind and the bot kept waiting.
+- Tried and rejected on sim2 (no gain, within noise): fighting two hunters at once (2.45-2.50 vs
+  2.45), longer preferred fight range 120/170 m (2.47/2.72 vs 2.53/2.67), remembered-crate farming
+  out to 170-250 m (2.45-2.50 vs 2.53; hunters arrive within ~30 s so there is little time to farm),
+  grabbing dropped cubes whenever no attacker has line of sight (2.57/2.78 vs 2.50/2.80; more cubes,
+  same score). The last two are kept because they are harmless and collect more cubes.
+Change: the gun's fire tolerance adds half of one tick of torso slew (turn_rate x 0.05 s x 0.5 =
+0.1 rad yaw, 0.075 rad pitch). The torso reaches the commanded aim within the first tick, so the
+shot still lands. Half (not the full tick) in case the server fires before slewing within a tick.
+Cost: none (two multiplications per tick).
+Local proof (sim2 cal-B, 60 matches each):
+- seeds 801-860: no slew 2.62 -> full slew 3.02 -> half slew 2.95; shots per match 122 -> 130.
+- seeds 901-960: no slew 2.73 -> full slew 2.83.

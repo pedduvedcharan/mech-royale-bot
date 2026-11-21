@@ -509,7 +509,7 @@ UPGRADE_ORDER = ["armor", "plating", "nanites", "servos", "laser_damage", "gun_d
 WEAPON_RANK = {"laser": 3, "lightning": 2, "mortar": 1, "gun": 0}
 
 # tunables (the local simulator can override them through BOT_PARAMS; unset in real matches)
-P = {"farm": 1, "farm_r": 75.0, "npc_hp": 0.6}
+P = {"farm": 1, "farm_r": 75.0, "farm_mem_r": 170.0, "npc_hp": 0.6, "maxf": 1, "fight_hp": 0.5, "ratio": 1.6, "want": 70.0, "want_laser": 70.0, "grab_r": 50.0, "slew_frac": 0.5}
 try:
     P.update(json.loads(os.environ.get("BOT_PARAMS", "{}")))
 except Exception:
@@ -554,6 +554,8 @@ class Bot:
         self.crate_target = None
         self.attack_t = {}         # enemy id -> last time it damaged us or aimed at us
         self.farm_shot = None      # aim/fire at a crate or drone while farming cubes
+        self.farm_mem = {}         # crate / drone id -> (kind, pos, last seen)
+        self.zone_next = (0.0, 0.0, 1e9)
 
     # ------------------------------------------------------------ entry
     def act(self, obs):
@@ -634,6 +636,9 @@ class Bot:
         zone = obs["zone"]
         walk = fin(stats.get("walk_speed", 11.7), 11.7)
         act = {"fire": [False, False]}
+        self.has_laser = any(wo and wo.get("kind") == "laser" for wo in (me.get("weapons") or []))
+        self.slew_y = fin(stats.get("turn_rate", 4.0), 4.0) * 0.05 * P["slew_frac"]
+        self.slew_p = fin(stats.get("pitch_rate", 3.0), 3.0) * 0.05 * P["slew_frac"]
 
         # --- events
         for e in obs.get("events", []) or []:
@@ -676,6 +681,7 @@ class Bot:
         self.safe_now = self.zone_at(zone, t + 3.0)
         cx1, cy1 = zone["next_center"]
         r1 = zone["next_radius"]
+        self.zone_next = (cx1, cy1, r1)
         cxn, cyn, rn = self.zone_at(zone, t)
         dz_now = math.hypot(x - cxn, y - cyn) - rn
         in_zone = me.get("in_zone", True)
@@ -722,6 +728,12 @@ class Bot:
             if lone and (not low or te["hp"] < 350) and (winning or d0 < 60):
                 mode = "fight"
                 target = (tid, te)
+            elif 2 <= len(threats) <= P["maxf"] and hp > P["fight_hp"] * mhp and \
+                    sum(th[2]["hp"] for th in threats) < hp * P["ratio"]:
+                # a pair of hunters: hiding rarely shakes chasers, so fight the weakest one
+                d0, tid, te = min(threats, key=lambda a: a[2]["hp"] + a[0] * 3)
+                mode = "fight"
+                target = (tid, te)
             else:
                 mode = "hide"
         elif hurt_recent and (self.last_dmg_by is not None or self.last_dmg_bearing is not None):
@@ -752,6 +764,7 @@ class Bot:
                 move = loot
             elif farm is not None:
                 move, self.farm_shot = farm
+                mode = "farm"
             else:
                 dg = math.hypot(gx - x, gy - y)
                 if dg > 3.0:
@@ -760,6 +773,12 @@ class Bot:
                         move = [move[0] * dg / 10, move[1] * dg / 10]
                 else:
                     move = [0.0, 0.0]
+        # grab dropped power cubes (kills drop 2+) whenever nobody can shoot us right now
+        if mode in ("travel", "hide", "farm") and not threats and t - self.last_dmg_t > 1.5 and P["grab_r"] > 0:
+            g = self._grab(obs, x, y, z)
+            if g is not None:
+                move = g
+                mode = "grab"
         if move is None:
             move = [0.0, 0.0]
         move = self._avoid_walls(x, y, move)
@@ -963,9 +982,9 @@ class Bot:
         side = to + self.strafe * math.pi / 2
         mx, my = math.cos(side), math.sin(side)
         theirs = te.get("weapons") or []
-        want = 70.0
+        want = P["want_laser"] if self.has_laser else P["want"]
         if "lightning" in theirs:
-            want = 90.0
+            want = max(want, 90.0)
         if d < want * 0.6:
             mx -= math.cos(to) * 0.7
             my -= math.sin(to) * 0.7
@@ -1010,6 +1029,19 @@ class Bot:
         s = 1.0 if bd > 4 else 0.5
         return [math.cos(yaw) * s, math.sin(yaw) * s]
 
+    def _grab(self, obs, x, y, z):
+        best, bd = None, P["grab_r"]
+        for c in obs.get("cubes", []) or []:
+            px, py, pz = c["pos"]
+            d = math.hypot(px - x, py - y)
+            if d < bd and abs(pz - z) < 3.5 and self.in_safe(px, py, 5):
+                if self.w is None or d < 6 or self.w.clear_path(x, y, px, py, 1.5):
+                    bd, best = d, (px, py)
+        if best is None:
+            return None
+        yaw = math.atan2(best[1] - y, best[0] - x)
+        return [math.cos(yaw), math.sin(yaw)]
+
     # ------------------------------------------------------------ farming cubes (only when safe)
     def _farm(self, obs, me, x, y, z, known, t, t0):
         """Break crates and kill NPC drones for power cubes when no attacker is around.
@@ -1022,7 +1054,31 @@ class Bot:
         if gun is None:
             return None
         hp_ok = me["hp"] > P["npc_hp"] * max(1.0, me["max_hp"])
+        # remember crates and drones seen, so we can walk back to them later
+        vis = set()
+        for c in obs.get("crates", []) or []:
+            vis.add(c["id"])
+            self.farm_mem[c["id"]] = ("crate", c["pos"], t)
+        for m in obs.get("mechs", []) or []:
+            if m.get("kind") == "npc":
+                vis.add(m["id"])
+                self.farm_mem[m["id"]] = ("npc", m["pos"], t)
+        for oid in list(self.farm_mem):
+            k, pos, ts = self.farm_mem[oid]
+            if oid not in vis and (math.hypot(pos[0] - x, pos[1] - y) < 30 or t - ts > 120):
+                del self.farm_mem[oid]
         best, bs = None, 1e9
+        cx1, cy1 = self.zone_next[0], self.zone_next[1]
+        r1 = self.zone_next[2]
+        for oid, (k, pos, ts) in self.farm_mem.items():
+            if oid in vis or (k == "npc" and not hp_ok) or abs(pos[2] - z) > 3.0:
+                continue
+            d = math.hypot(pos[0] - x, pos[1] - y)
+            if d > P["farm_mem_r"] or math.hypot(pos[0] - cx1, pos[1] - cy1) > r1 * 0.85 or not self.in_safe(pos[0], pos[1], 15):
+                continue
+            sc = d + (40 if k == "npc" else 0) + 30
+            if sc < bs:
+                bs, best = sc, ("walk", {"pos": pos}, d)
         for c in obs.get("crates", []) or []:
             px, py, pz = c["pos"]
             if abs(pz - z) > 3.0:
@@ -1046,6 +1102,8 @@ class Bot:
         if best is None:
             return None
         kind, o, d = best
+        if kind == "walk":
+            return self._nav_to(o["pos"][0], o["pos"][1], x, y, t0), None
         px, py, pz = o["pos"]
         tz = pz + (1.2 if kind == "crate" else 1.8)
         if kind == "npc":
@@ -1168,8 +1226,11 @@ class Bot:
                 dpit = math.atan2(pz - self.muzzle, math.hypot(px - x, py - y))
                 if out_aim is None:
                     out_aim = [dyaw, dpit]
-                tol = max(0.006, math.atan2(1.6, d))
-                if abs(wrap(ayaw - dyaw)) < tol and abs(apit - dpit) < max(0.012, math.atan2(2.6, d)) and wo.get("reload", 0) <= 0:
+                # the torso slews toward the new aim during the first tick (turn_rate x 0.05 s) before
+                # the gun fires, so an error that one tick of slewing closes still lands on target
+                tol = max(0.006, math.atan2(1.6, d)) + self.slew_y
+                ptol = max(0.012, math.atan2(2.6, d)) + self.slew_p
+                if abs(wrap(ayaw - dyaw)) < tol and abs(apit - dpit) < ptol and wo.get("reload", 0) <= 0:
                     if w is None or w.los(x, y, self.muzzle, px, py, pz, 1.5):
                         fire[slot] = True
             elif k == "laser":
