@@ -545,6 +545,7 @@ class Bot:
         self.errs = 0
         self.scan = 0.0
         self.crate_target = None
+        self.attack_t = {}         # enemy id -> last time it damaged us or aimed at us
 
     # ------------------------------------------------------------ entry
     def act(self, obs):
@@ -632,6 +633,8 @@ class Bot:
                 self.last_dmg_t = t
                 self.last_dmg_bearing = e.get("bearing")
                 self.last_dmg_by = e.get("by")
+                if e.get("by") is not None:
+                    self.attack_t[e.get("by")] = t
                 self.dmg_window.append((t, fin(e.get("amount", 0))))
         while self.dmg_window and self.dmg_window[0][0] < t - 3.0:
             self.dmg_window.popleft()
@@ -672,14 +675,23 @@ class Bot:
         need = (math.hypot(x - cx1, y - cy1) - r1 * 0.6) / walk
         zone_urgent = (not in_zone) or dz_now > -8 or (need > 0 and t + need + 12 > zone["shrink_end"]) or not self.in_safe(x, y, 4)
 
-        # --- threats
-        threats = []   # enemies that can shoot us now
-        known = []
+        # --- threats: only enemies that are actually after us (they shot us, aim at us, or are close).
+        # House bots that are not hunting walk past without shooting, so hiding from them wastes the
+        # chance to fight the real hunter.
+        threats = []   # attackers that can shoot us now
+        known = []     # attackers seen recently
         for eid, e in self.enemies.items():
             ex, ey, ez = e["pos"]
             d = math.hypot(ex - x, ey - y)
             age = t - e["t"]
             if age > 8:
+                continue
+            if age < 0.6 and d < 200:
+                to_me = math.atan2(y - ey, x - ex)
+                if abs(wrap(fin(e["aim"][0]) - to_me)) < 0.15 or (e.get("charging") and abs(wrap(fin(e["aim"][0]) - to_me)) < 0.3):
+                    self.attack_t[eid] = t
+            hostile = t - self.attack_t.get(eid, -99) < 10 or d < 35
+            if not hostile:
                 continue
             known.append((d, eid, e))
             if age < 0.6 and d < 285:
